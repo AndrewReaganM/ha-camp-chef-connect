@@ -1,0 +1,74 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Camp Chef Connect",
+        "description": "Enter the email address you use in the Camp Chef Connect app. Camp Chef will email you a one-time login PIN.",
+        "data": {
+          "email": "Email"
+        }
+      },
+      "pin": {
+        "title": "Enter your PIN",
+        "description": "Camp Chef emailed a login PIN to {email}. Enter it below.",
+        "data": {
+          "pin": "PIN"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Log in to Camp Chef again",
+        "description": "Your Camp Chef session for {email} has expired. Submit to receive a new login PIN by email."
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the Camp Chef cloud.",
+      "invalid_pin": "That PIN was not accepted. Check the latest email from Camp Chef and try again.",
+      "unknown_account": "Camp Chef did not accept that email address."
+    },
+    "abort": {
+      "already_configured": "This Camp Chef account is already configured.",
+      "no_grills": "No grills are linked to this Camp Chef account. Add the grill in the Camp Chef Connect app first.",
+      "reauth_successful": "Logged in again successfully.",
+      "wrong_account": "That PIN belongs to a different Camp Chef account."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connected": { "name": "Connected" },
+      "fault": { "name": "Fault" },
+      "transitioning": { "name": "Transitioning" }
+    },
+    "number": {
+      "smoke_level": { "name": "Smoke level" }
+    },
+    "sensor": {
+      "chamber_temperature": { "name": "Chamber temperature" },
+      "set_temperature": { "name": "Set temperature" },
+      "pellet_level": { "name": "Pellet level" },
+      "mode": {
+        "name": "Mode",
+        "state": {
+          "standby": "Standby",
+          "fan": "Shutdown fan",
+          "feed": "Feed",
+          "record": "Record",
+          "high": "High",
+          "run": "Running",
+          "cook_program": "Cook program",
+          "debug": "Debug"
+        }
+      },
+      "last_fault": {
+        "name": "Last fault",
+        "state": {
+          "none": "None",
+          "sensor": "Sensor error",
+          "flame_out": "Flame out",
+          "over_temp": "Over temperature"
+        }
+      },
+      "wifi_rssi": { "name": "WiFi signal" },
+      "probe": { "name": "Probe {number}" }
+    }
+  }
+}
