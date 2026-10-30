@@ -147,3 +147,39 @@ async def test_rejected_token_fails_setup_with_reauth(hass: HomeAssistant, cloud
     assert entry.state is ConfigEntryState.SETUP_ERROR
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert flows and flows[0]["context"]["source"] == "reauth"
+
+
+async def test_temperature_change_updates_cloud_goal_first(hass: HomeAssistant, cloud) -> None:
+    await _setup(hass)
+
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 250}, blocking=True
+    )
+    await _wait_for_write(hass, cloud, 1)
+    assert cloud.grill_patches == [
+        {
+            "id": "grill-1",
+            "body": {"currentSession": {"IfNotNull": {"chamberGoal": {"Assign": 250}}}},
+        }
+    ]
+    assert cloud.events == ["patch", "write"]
+
+    # Smoke has no cloud field, so a smoke-only change stays direct.
+    await hass.services.async_call(
+        "number",
+        "set_value",
+        {"entity_id": "number.woodwind_smoke_level", "value": 6},
+        blocking=True,
+    )
+    await _wait_for_write(hass, cloud, 2)
+    assert len(cloud.grill_patches) == 1
+
+
+async def test_cloud_goal_failure_still_writes(hass: HomeAssistant, cloud) -> None:
+    await _setup(hass)
+    cloud.fail_patch = True
+
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 240}, blocking=True
+    )
+    assert await _wait_for_write(hass, cloud, 1) == bytes([1, 2, 0x11, 0x00, 0xF0, 0x03, 0x00])

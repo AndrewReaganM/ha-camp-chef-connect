@@ -8,5 +8,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/AndrewReaganM/ha-camp-chef-connect/issues",
   "requirements": [],
-  "version": "0.1.2"
+  "version": "0.1.3"
 }

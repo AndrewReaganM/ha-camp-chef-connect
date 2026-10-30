@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import logging
 from typing import Any
 
 import aiohttp
@@ -11,6 +12,7 @@ import aiohttp
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
+from .api import CampChefError
 from .connection import GrillConnection
 from .const import DEFAULT_MAX_TEMP_F, DEFAULT_MIN_TEMP_F, DOMAIN
 from .protocol import (
@@ -24,6 +26,8 @@ from .protocol import (
     write_frame,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class CampChefGrill:
     """One grill: cloud metadata plus a live websocket relay."""
@@ -35,10 +39,12 @@ class CampChefGrill:
         info: dict[str, Any],
         get_token: Callable[[], Awaitable[str]],
         on_auth_failed: Callable[[], None],
+        set_chamber_goal: Callable[[str, int], Awaitable[None]],
     ) -> None:
         self.hass = hass
         self.info = info
         self.grill_id: str = info["_id"]
+        self._set_chamber_goal = set_chamber_goal
         self._listeners: list[CALLBACK_TYPE] = []
         self.connection = GrillConnection(
             session, self.grill_id, get_token, self._notify, on_auth_failed
@@ -124,6 +130,19 @@ class CampChefGrill:
             raise HomeAssistantError(
                 f"Temperature must be between {self.min_temp_f} and {self.max_temp_f} °F"
             )
+        if set_temp_f != self.state.set_temp_f:
+            # The cloud keeps its own copy of the goal and pushes it to the
+            # grill; update it first, as the official app does, so a later
+            # push does not revert this change.
+            try:
+                await self._set_chamber_goal(self.grill_id, set_temp_f)
+            except CampChefError as err:
+                _LOGGER.warning(
+                    "Could not update the Camp Chef cloud goal for %s; "
+                    "it may push the old temperature back: %s",
+                    self.grill_id,
+                    err,
+                )
         payload = encode_run_mode(set_temp_f, smoke_level, self.state.run_mode_trailer)
         await self._write(write_frame(WsId.MODE, payload))
 

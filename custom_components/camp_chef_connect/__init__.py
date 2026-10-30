@@ -66,8 +66,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: CampChefConfigEntry) -> 
     def auth_failed() -> None:
         entry.async_start_reauth(hass)
 
+    async def set_chamber_goal(grill_id: str, goal_f: int) -> None:
+        await get_token()
+        await api.set_chamber_goal(grill_id, goal_f)
+
     grills = [
-        CampChefGrill(hass, session, info, get_token, auth_failed)
+        CampChefGrill(hass, session, info, get_token, auth_failed, set_chamber_goal)
         for info in grill_infos
         if info.get("_id")
     ]

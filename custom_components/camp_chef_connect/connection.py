@@ -80,6 +80,7 @@ class GrillConnection:
         ws, channel = self._ws, self._channel
         if ws is None or channel is None or ws.closed:
             raise ConnectionError("Not connected to the grill")
+        _LOGGER.debug("Grill %s send %s", self._grill_id, " ".join(f.hex() for f in frames))
         await ws.send_str(json.dumps({"channel": channel, "data": encode_message(frames)}))
 
     async def _run(self) -> None:

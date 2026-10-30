@@ -51,12 +51,17 @@ class FakeCloud:
         self.ws_open_messages: list[dict] = []
         self.reject_socket_auth = False
         self.sockets: set[web.WebSocketResponse] = set()
+        self.grill_patches: list[dict] = []
+        # Write log across both channels, so tests can check ordering.
+        self.events: list[str] = []
+        self.fail_patch = False
         app = web.Application()
         app.router.add_post("/auth/login-email", self.login_email)
         app.router.add_post("/auth/login-email-pin", self.login_pin)
         app.router.add_get("/auth/refresh-token", self.refresh)
         app.router.add_get("/auth/self", self.self_)
         app.router.add_post("/grill/rest/query", self.grills)
+        app.router.add_patch("/grill/rest/{grill_id}", self.patch_grill)
         app.router.add_get("/", self.socket)
         self.server = TestServer(app)
 
@@ -89,6 +94,16 @@ class FakeCloud:
         return web.json_response(
             [{"_id": GRILL_ID, "name": "Woodwind", "model": "DWW2", "isOnline": True}]
         )
+
+    async def patch_grill(self, request: web.Request) -> web.Response:
+        if not self._authed(request):
+            return web.json_response({"message": "no"}, status=401)
+        if self.fail_patch:
+            return web.json_response({"message": "boom"}, status=500)
+        body = await request.json()
+        self.grill_patches.append({"id": request.match_info["grill_id"], "body": body})
+        self.events.append("patch")
+        return web.json_response({"_id": request.match_info["grill_id"]})
 
     async def socket(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
@@ -131,6 +146,7 @@ class FakeCloud:
                     replies.append(bytes([ws_id, 1]) + self.grill.values[ws_id])
                 elif op == 2:
                     self.grill.writes.append(frame)
+                    self.events.append("write")
                     self.grill.values[ws_id] = frame[2:]
                     replies.append(bytes([ws_id, 3, 0]))
             if replies:
