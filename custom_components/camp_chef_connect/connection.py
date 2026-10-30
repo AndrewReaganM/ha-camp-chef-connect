@@ -109,23 +109,15 @@ class GrillConnection:
             delay = min(delay * 2, RECONNECT_MAX)
 
     async def _session_once(self) -> None:
-        token = await self._get_token()
         channel = str(uuid.uuid4())
+        # Nothing at all for STALE_AFTER (not even a channel ack) means a dead socket.
         async with self._session.ws_connect(
-            WS_URL, timeout=aiohttp.ClientWSTimeout(ws_close=10), heartbeat=None
+            WS_URL,
+            timeout=aiohttp.ClientWSTimeout(ws_receive=STALE_AFTER, ws_close=10),
+            heartbeat=None,
         ) as ws:
-            await ws.send_str(
-                json.dumps(
-                    {
-                        "channel": channel,
-                        "path": self.path,
-                        "queryParams": {"jwt": [token]},
-                        "start": True,
-                    }
-                )
-            )
-            self._ws, self._channel = ws, channel
-            await self.send_frames(initial_read_frames())
+            self._ws = ws
+            await self._open_channel(ws, channel)
             background = asyncio.gather(self._keepalive(ws), self._poll())
             try:
                 await self._receive(ws, channel)
@@ -135,6 +127,26 @@ class GrillConnection:
                     await background
                 except asyncio.CancelledError:
                     pass
+
+    async def _open_channel(self, ws: aiohttp.ClientWebSocketResponse, channel: str) -> None:
+        """Ask the server to open the grill channel.
+
+        Frames may only be sent once the server answers with its own
+        ``start`` message; anything sent earlier is rejected with
+        "Channel information not found".
+        """
+        self._channel = None
+        token = await self._get_token()
+        await ws.send_str(
+            json.dumps(
+                {
+                    "channel": channel,
+                    "path": self.path,
+                    "queryParams": {"jwt": [token]},
+                    "start": True,
+                }
+            )
+        )
 
     async def _receive(self, ws: aiohttp.ClientWebSocketResponse, channel: str) -> None:
         async for msg in ws:
@@ -155,8 +167,16 @@ class GrillConnection:
                 if "auth" in error.lower() or "token" in error.lower():
                     raise CampChefAuthError(error)
                 raise ConnectionError(f"Server closed grill channel: {error}")
+            if envelope.get("start"):
+                _LOGGER.debug("Grill %s channel open", self._grill_id)
+                self._channel = channel
+                await self.send_frames(initial_read_frames())
+                continue
             if envelope.get("end"):
-                raise ConnectionError("Server ended grill channel")
+                # The official client reopens the channel when the server ends it.
+                _LOGGER.debug("Grill %s channel ended; reopening", self._grill_id)
+                await self._open_channel(ws, channel)
+                continue
             if data := envelope.get("data"):
                 changed = False
                 for frame in decode_message(data):
@@ -174,6 +194,7 @@ class GrillConnection:
     async def _poll(self) -> None:
         while True:
             await asyncio.sleep(POLL_INTERVAL)
-            await self.send_frames(telemetry_read_frames(self.state.probe_count))
+            if self._channel is not None:
+                await self.send_frames(telemetry_read_frames(self.state.probe_count))
             # Let entities flip to unavailable if the grill stops answering.
             self._on_update()

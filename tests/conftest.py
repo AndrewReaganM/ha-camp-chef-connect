@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from unittest.mock import patch
@@ -94,6 +95,15 @@ class FakeCloud:
         await ws.prepare(request)
         self.sockets.add(ws)
         channel = None
+        ready: set[str] = set()
+
+        async def acknowledge(ch: str) -> None:
+            # Like the real server, the channel only exists once it says so.
+            await asyncio.sleep(0.05)
+            ready.add(ch)
+            if not ws.closed:
+                await ws.send_str(json.dumps({"channel": ch, "start": True}))
+
         async for msg in ws:
             if msg.type != WSMsgType.TEXT or not msg.data.strip():
                 continue
@@ -103,8 +113,15 @@ class FakeCloud:
                 channel = env["channel"]
                 if self.reject_socket_auth or env["queryParams"]["jwt"] != [TOKEN]:
                     await ws.send_str(json.dumps({"channel": channel, "error": "Not authorized"}))
+                else:
+                    self._ack_task = asyncio.create_task(acknowledge(channel))
                 continue
             if env.get("channel") != channel or not env.get("data"):
+                continue
+            if channel not in ready:
+                await ws.send_str(
+                    json.dumps({"channel": channel, "error": "Channel information not found."})
+                )
                 continue
             replies = []
             for part in env["data"].split("|"):
