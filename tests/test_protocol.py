@@ -92,3 +92,29 @@ def test_status_frames_are_ignored():
     assert not protocol.apply_frame(state, bytes([1, 0]))  # too short
     assert not protocol.apply_frame(state, bytes([99, 4, 1]))  # unknown id
     assert state == GrillState()
+
+
+def test_run_mode_trailer_round_trips():
+    # Frame captured from a Woodwind 36 (DWWP): RUN 260 smoke 10, trailer 0x05.
+    state = GrillState()
+    assert protocol.apply_frame(state, bytes.fromhex("01011101040a05"))
+    assert (state.set_temp_f, state.smoke_level, state.run_mode_trailer) == (260, 10, b"\x05")
+    payload = protocol.encode_run_mode(265, 10, state.run_mode_trailer)
+    assert payload == bytes.fromhex("1101090a05")
+
+
+def test_real_woodwind_36_frames():
+    state = GrillState()
+    for hexframe in (
+        "02014457575000a001f400",  # model DWWP 160-500
+        "06040104",  # chamber 260
+        "040164",  # pellets 100
+        "10040000",  # probe 1 empty
+        "2504c9",  # rssi -55
+        "3001445757502056312e302e33",  # "DWWP V1.0.3"
+    ):
+        assert protocol.apply_frame(state, bytes.fromhex(hexframe))
+    assert (state.model_code, state.min_temp_f, state.max_temp_f) == ("DWWP", 160, 500)
+    assert (state.chamber_f, state.pellet_level, state.wifi_rssi) == (260, 100, -55)
+    assert state.probes_f == {0: None}
+    assert state.stm_firmware == "DWWP V1.0.3"

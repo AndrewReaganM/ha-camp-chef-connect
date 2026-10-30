@@ -124,7 +124,8 @@ class CampChefGrill:
             raise HomeAssistantError(
                 f"Temperature must be between {self.min_temp_f} and {self.max_temp_f} °F"
             )
-        await self._write(write_frame(WsId.MODE, encode_run_mode(set_temp_f, smoke_level)))
+        payload = encode_run_mode(set_temp_f, smoke_level, self.state.run_mode_trailer)
+        await self._write(write_frame(WsId.MODE, payload))
 
     async def async_shutdown(self) -> None:
         """Put the grill into its shutdown (standby) cycle."""

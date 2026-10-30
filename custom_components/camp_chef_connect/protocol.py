@@ -88,6 +88,9 @@ class GrillState:
     mode: GrillModeType | None = None
     set_temp_f: int | None = None
     smoke_level: int | None = None
+    # Bytes after the smoke level in a RUN mode report. Their meaning is
+    # unknown (a Woodwind Pro reports 0x05), so writes echo them back.
+    run_mode_trailer: bytes = b"\x00"
     fan_level: int | None = None
     chamber_f: int | None = None
     probes_f: dict[int, int | None] = field(default_factory=dict)
@@ -137,15 +140,17 @@ def write_frame(ws_id: int, payload: bytes) -> bytes:
     return bytes((ws_id, Op.SET)) + payload
 
 
-def encode_run_mode(set_temp_f: int, smoke_level: int) -> bytes:
+def encode_run_mode(set_temp_f: int, smoke_level: int, trailer: bytes = b"\x00") -> bytes:
     """MODE payload for RUN at a set temperature and smoke level.
 
-    The official app allocates five bytes and leaves the last one zero.
+    The official app sends a single zero after the smoke level; pass the
+    grill's own reported trailer instead to leave those bytes unchanged.
     """
     return (
         bytes((GrillModeType.RUN,))
         + int(set_temp_f).to_bytes(2, "big", signed=True)
-        + bytes((int(smoke_level) & 0xFF, 0))
+        + bytes((int(smoke_level) & 0xFF,))
+        + (trailer or b"\x00")
     )
 
 
@@ -213,6 +218,7 @@ def apply_frame(state: GrillState, frame: bytes) -> bool:
         if mode == GrillModeType.RUN and len(payload) >= 4:
             state.set_temp_f = _i16(payload[1:3])
             state.smoke_level = payload[3]
+            state.run_mode_trailer = bytes(payload[4:]) or b"\x00"
         elif mode != GrillModeType.RUN:
             state.set_temp_f = None
             state.smoke_level = None
