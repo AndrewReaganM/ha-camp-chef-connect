@@ -35,6 +35,7 @@ class WsId(IntEnum):
     PELLET_LEVEL = 4
     LAST_FAULT = 5
     CHAMBER = 6
+    WIFI_STATUS = 34
     WIFI_RSSI = 37
     STM_FIRMWARE = 48
     ESP_FIRMWARE = 49
@@ -72,6 +73,16 @@ LIT_MODES = frozenset(
 ADJUSTABLE_MODES = frozenset({GrillModeType.RUN, GrillModeType.HIGH})
 
 
+class WifiStatus(IntEnum):
+    """WIFI_STATUS values. The cloud also sends these itself when the grill
+    connects or drops off (``22 04 00`` when it goes offline)."""
+
+    OFFLINE = 0
+    ACCESS_POINT = 1
+    CONNECTED = 2
+    CREDENTIAL_FAIL = 3
+
+
 class FaultCode(IntEnum):
     """Second byte of the LAST_FAULT characteristic."""
 
@@ -98,6 +109,7 @@ class GrillState:
     transitioning: bool | None = None
     fault: FaultCode | None = None
     wifi_rssi: int | None = None
+    wifi_status: int | None = None
     model_code: str | None = None
     min_temp_f: int | None = None
     max_temp_f: int | None = None
@@ -252,6 +264,10 @@ def apply_frame(state: GrillState, frame: bytes) -> bool:
             state.fault = FaultCode(payload[1])
         except ValueError:
             return False
+        return True
+
+    if ws_id == WsId.WIFI_STATUS:
+        state.wifi_status = payload[0]
         return True
 
     if ws_id == WsId.WIFI_RSSI:

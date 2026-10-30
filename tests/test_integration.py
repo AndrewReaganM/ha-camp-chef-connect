@@ -149,37 +149,83 @@ async def test_rejected_token_fails_setup_with_reauth(hass: HomeAssistant, cloud
     assert flows and flows[0]["context"]["source"] == "reauth"
 
 
-async def test_temperature_change_updates_cloud_goal_first(hass: HomeAssistant, cloud) -> None:
+async def test_never_touches_cloud_cook_goal(hass: HomeAssistant, cloud) -> None:
     await _setup(hass)
-
     await hass.services.async_call(
         "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 250}, blocking=True
     )
     await _wait_for_write(hass, cloud, 1)
-    assert cloud.grill_patches == [
-        {
-            "id": "grill-1",
-            "body": {"currentSession": {"IfNotNull": {"chamberGoal": {"Assign": 250}}}},
-        }
-    ]
-    assert cloud.events == ["patch", "write"]
+    assert cloud.grill_patches == []
 
-    # Smoke has no cloud field, so a smoke-only change stays direct.
+
+async def test_optimistic_update(hass: HomeAssistant, cloud) -> None:
+    await _setup(hass)
+    cloud.grill.hold_confirmations = True
+
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 240}, blocking=True
+    )
+    # The grill has not confirmed anything, but HA already shows the request.
+    assert hass.states.get(CLIMATE).attributes["temperature"] == 240
     await hass.services.async_call(
         "number",
         "set_value",
         {"entity_id": "number.woodwind_smoke_level", "value": 6},
         blocking=True,
     )
-    await _wait_for_write(hass, cloud, 2)
-    assert len(cloud.grill_patches) == 1
+    assert hass.states.get("number.woodwind_smoke_level").state == "6"
+    assert hass.states.get(CLIMATE).attributes["temperature"] == 240
 
 
-async def test_cloud_goal_failure_still_writes(hass: HomeAssistant, cloud) -> None:
+async def test_offline_announcement_and_return(hass: HomeAssistant, cloud) -> None:
     await _setup(hass)
-    cloud.fail_patch = True
+    assert hass.states.get(CLIMATE).state == HVACMode.HEAT
 
-    await hass.services.async_call(
-        "climate", "set_temperature", {"entity_id": CLIMATE, "temperature": 240}, blocking=True
-    )
-    assert await _wait_for_write(hass, cloud, 1) == bytes([1, 2, 0x11, 0x00, 0xF0, 0x03, 0x00])
+    await cloud.set_online(False)
+    await _until(hass, lambda: hass.states.get(CLIMATE).state == "unavailable")
+    assert hass.states.get("binary_sensor.woodwind_connected").state == "off"
+
+    cloud.reads.clear()
+    cloud.grill.values[6] = (180).to_bytes(2, "big")
+    await cloud.set_online(True)
+    # Coming back triggers a full re-read without waiting for the next poll.
+    await _until(hass, lambda: hass.states.get(CLIMATE).state == HVACMode.HEAT)
+    assert 2 in cloud.reads  # model is re-read too
+    assert hass.states.get(CLIMATE).attributes["current_temperature"] == 180
+
+
+async def test_brief_socket_drop_stays_available(hass: HomeAssistant, cloud) -> None:
+    await _setup(hass)
+    opens = len(cloud.ws_open_messages)
+    await cloud.drop_sockets()
+    await hass.async_block_till_done()
+    assert hass.states.get(CLIMATE).state == HVACMode.HEAT
+    assert hass.states.get("binary_sensor.woodwind_connected").state == "on"
+    await _until(hass, lambda: len(cloud.ws_open_messages) > opens, timeout=10)
+
+
+async def test_setup_with_grill_offline(hass: HomeAssistant, cloud) -> None:
+    cloud.grill.online = False
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await _setup(hass)
+    # No 15 s wait for a model report that will not come.
+    assert loop.time() - started < 5
+    await hass.async_block_till_done()
+    assert hass.states.get(CLIMATE).state == "unavailable"
+    assert hass.states.get("binary_sensor.woodwind_connected").state == "off"
+    assert hass.states.get("sensor.woodwind_probe_4") is not None  # model from the cloud
+
+    await _until(hass, lambda: cloud.live is not None)
+    await cloud.set_online(True)
+    await _until(hass, lambda: hass.states.get(CLIMATE).state == HVACMode.HEAT)
+
+
+async def _until(hass: HomeAssistant, predicate, timeout: float = 5) -> None:
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while not predicate():
+        if loop.time() > end:
+            raise AssertionError("condition not met in time")
+        await asyncio.sleep(0.02)
+        await hass.async_block_till_done()

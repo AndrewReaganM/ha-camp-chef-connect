@@ -43,6 +43,9 @@ class FakeGrill:
             49: b"2.1.8",
         }
         self.writes: list[bytes] = []
+        self.online = True
+        # When set, writes are applied but not confirmed until released.
+        self.hold_confirmations = False
 
 
 class FakeCloud:
@@ -54,7 +57,10 @@ class FakeCloud:
         self.grill_patches: list[dict] = []
         # Write log across both channels, so tests can check ordering.
         self.events: list[str] = []
-        self.fail_patch = False
+        self.reads: list[int] = []
+        # The live grill channel, for pushing announcements from tests.
+        self.live: tuple[web.WebSocketResponse, str] | None = None
+        self.tasks: set[asyncio.Task] = set()
         app = web.Application()
         app.router.add_post("/auth/login-email", self.login_email)
         app.router.add_post("/auth/login-email-pin", self.login_pin)
@@ -92,18 +98,28 @@ class FakeCloud:
         if not self._authed(request):
             return web.json_response({"message": "no"}, status=401)
         return web.json_response(
-            [{"_id": GRILL_ID, "name": "Woodwind", "model": "DWW2", "isOnline": True}]
+            [{"_id": GRILL_ID, "name": "Woodwind", "model": "DWW2", "isOnline": self.grill.online}]
         )
 
     async def patch_grill(self, request: web.Request) -> web.Response:
-        if not self._authed(request):
-            return web.json_response({"message": "no"}, status=401)
-        if self.fail_patch:
-            return web.json_response({"message": "boom"}, status=500)
-        body = await request.json()
-        self.grill_patches.append({"id": request.match_info["grill_id"], "body": body})
-        self.events.append("patch")
+        self.grill_patches.append({"id": request.match_info["grill_id"]})
         return web.json_response({"_id": request.match_info["grill_id"]})
+
+    async def push(self, frames: list[bytes]) -> None:
+        """Send frames on the open grill channel, as the cloud would."""
+        assert self.live, "no grill channel open"
+        ws, ch = self.live
+        data = "|".join(base64.b64encode(f).decode() for f in frames)
+        await ws.send_str(json.dumps({"channel": ch, "data": data}))
+
+    async def set_online(self, online: bool) -> None:
+        """Grill drops off or reports in; the cloud announces it (22 04 xx)."""
+        self.grill.online = online
+        await self.push([bytes([0x22, 4, 2 if online else 0])])
+
+    async def drop_sockets(self) -> None:
+        for ws in list(self.sockets):
+            await ws.close()
 
     async def socket(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
@@ -118,6 +134,9 @@ class FakeCloud:
             ready.add(ch)
             if not ws.closed:
                 await ws.send_str(json.dumps({"channel": ch, "start": True}))
+                self.live = (ws, ch)
+                # The cloud announces the grill's state on every new channel.
+                await self.push([bytes([0x22, 4, 2 if self.grill.online else 0])])
 
         async for msg in ws:
             if msg.type != WSMsgType.TEXT or not msg.data.strip():
@@ -129,7 +148,9 @@ class FakeCloud:
                 if self.reject_socket_auth or env["queryParams"]["jwt"] != [TOKEN]:
                     await ws.send_str(json.dumps({"channel": channel, "error": "Not authorized"}))
                 else:
-                    self._ack_task = asyncio.create_task(acknowledge(channel))
+                    task = asyncio.create_task(acknowledge(channel))
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
                 continue
             if env.get("channel") != channel or not env.get("data"):
                 continue
@@ -142,13 +163,17 @@ class FakeCloud:
             for part in env["data"].split("|"):
                 frame = base64.b64decode(part)
                 ws_id, op = frame[0], frame[1]
+                if not self.grill.online:
+                    continue  # an offline grill answers nothing
                 if op == 0 and ws_id in self.grill.values:
-                    replies.append(bytes([ws_id, 1]) + self.grill.values[ws_id])
+                    self.reads.append(ws_id)
+                    if not self.grill.hold_confirmations:
+                        replies.append(bytes([ws_id, 1]) + self.grill.values[ws_id])
                 elif op == 2:
                     self.grill.writes.append(frame)
-                    self.events.append("write")
                     self.grill.values[ws_id] = frame[2:]
-                    replies.append(bytes([ws_id, 3, 0]))
+                    if not self.grill.hold_confirmations:
+                        replies.append(bytes([ws_id, 3, 0]))
             if replies:
                 data = "|".join(base64.b64encode(r).decode() for r in replies)
                 await ws.send_str(json.dumps({"channel": channel, "data": data}))
@@ -165,6 +190,8 @@ async def cloud(socket_enabled):
         patch("custom_components.camp_chef_connect.connection.WS_URL", f"{base}/?path=multiplex"),
     ):
         yield fake
+    for task in list(fake.tasks):
+        task.cancel()
     for ws in list(fake.sockets):
         await ws.close()
     await fake.server.close()

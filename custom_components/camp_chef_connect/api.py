@@ -6,7 +6,6 @@ import base64
 import json
 import time
 from typing import Any
-from urllib.parse import quote
 
 import aiohttp
 
@@ -129,18 +128,6 @@ class CampChefApi:
         if not isinstance(grills, list):
             raise CampChefConnectionError("Unexpected /grill/rest/query response")
         return grills
-
-    async def set_chamber_goal(self, grill_id: str, goal_f: int) -> None:
-        """Set the cook session's goal temperature, as the official app does.
-
-        A Lightning Server ``Modification<Grill>``; ``IfNotNull`` makes it a
-        no-op when the grill has no current cook session.
-        """
-        await self._request(
-            "PATCH",
-            f"/grill/rest/{quote(grill_id, safe='')}",
-            json_body={"currentSession": {"IfNotNull": {"chamberGoal": {"Assign": int(goal_f)}}}},
-        )
 
 
 async def _error_message(resp: aiohttp.ClientResponse) -> str:

@@ -55,6 +55,23 @@ The integration keeps one channel open per grill, receives pushed updates, and
 re-reads telemetry every 60 seconds. The session token is refreshed
 automatically; if Camp Chef rejects it, Home Assistant asks you to log in again.
 
+### When the grill is off
+
+Most of the time the grill is switched off. The cloud keeps the channel open
+anyway and announces the grill's WiFi state on it (`22 04 00` offline,
+`22 04 02` online), so entities go unavailable as soon as the grill drops off
+and come back, fully re-read, as soon as it reports in. Home Assistant starts
+without waiting when the cloud says the grill is off, and a brief cloud
+reconnect does not make entities unavailable.
+
+### Changes from Home Assistant
+
+Temperature, smoke and shutdown are written directly to the grill, exactly like
+the app's direct path, and shown in Home Assistant immediately. The integration
+never edits the cloud's stored cook goal. With debug logging on, every write
+records who requested it (user or automation) and every frame sent and
+received.
+
 ## Development
 
 ```bash

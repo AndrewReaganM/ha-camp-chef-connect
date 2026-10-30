@@ -12,12 +12,12 @@ import aiohttp
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import CampChefError
 from .connection import GrillConnection
 from .const import DEFAULT_MAX_TEMP_F, DEFAULT_MIN_TEMP_F, DOMAIN
 from .protocol import (
     ADJUSTABLE_MODES,
     LIT_MODES,
+    GrillModeType,
     GrillState,
     WsId,
     encode_run_mode,
@@ -39,16 +39,23 @@ class CampChefGrill:
         info: dict[str, Any],
         get_token: Callable[[], Awaitable[str]],
         on_auth_failed: Callable[[], None],
-        set_chamber_goal: Callable[[str, int], Awaitable[None]],
     ) -> None:
         self.hass = hass
         self.info = info
         self.grill_id: str = info["_id"]
-        self._set_chamber_goal = set_chamber_goal
         self._listeners: list[CALLBACK_TYPE] = []
         self.connection = GrillConnection(
             session, self.grill_id, get_token, self._notify, on_auth_failed
         )
+        # Until the grill reports its own model, use the cloud's record so the
+        # probe count is right even when the grill is off.
+        if isinstance(model := info.get("model"), str) and len(model) == 4:
+            self.connection.state.model_code = model
+
+    @property
+    def cloud_reports_online(self) -> bool:
+        """The cloud's online flag from setup; False only if it says offline."""
+        return info_online if (info_online := self.info.get("isOnline")) is not None else True
 
     @property
     def state(self) -> GrillState:
@@ -88,13 +95,17 @@ class CampChefGrill:
     async def stop(self) -> None:
         await self.connection.stop()
 
-    async def async_wait_for_model(self, timeout: float) -> None:
-        """Wait until the grill reports its model, or give up after ``timeout``."""
-        if self.state.model_code:
+    async def async_wait_for_first_report(self, timeout: float) -> None:
+        """Wait until the grill reports in, or give up after ``timeout``.
+
+        Skipped when the cloud already says the grill is off, which is most
+        of the time, so startup is not held up waiting for it.
+        """
+        if self.available or not self.cloud_reports_online:
             return
         reported = asyncio.Event()
         remove = self.async_add_listener(
-            lambda: reported.set() if self.state.model_code else None
+            lambda: reported.set() if self.available or self.connection.reported_offline else None
         )
         waiter = asyncio.ensure_future(reported.wait())
         # Stop waiting early if the connection gives up (e.g. rejected token).
@@ -119,7 +130,9 @@ class CampChefGrill:
         for update in list(self._listeners):
             update()
 
-    async def async_set_run(self, set_temp_f: int, smoke_level: int) -> None:
+    async def async_set_run(
+        self, set_temp_f: int, smoke_level: int, requested_by: str = "unknown"
+    ) -> None:
         """Change set temperature and smoke on a grill that is already running."""
         if self.state.mode not in ADJUSTABLE_MODES:
             raise HomeAssistantError(
@@ -130,25 +143,33 @@ class CampChefGrill:
             raise HomeAssistantError(
                 f"Temperature must be between {self.min_temp_f} and {self.max_temp_f} °F"
             )
-        if set_temp_f != self.state.set_temp_f:
-            # The cloud keeps its own copy of the goal and pushes it to the
-            # grill; update it first, as the official app does, so a later
-            # push does not revert this change.
-            try:
-                await self._set_chamber_goal(self.grill_id, set_temp_f)
-            except CampChefError as err:
-                _LOGGER.warning(
-                    "Could not update the Camp Chef cloud goal for %s; "
-                    "it may push the old temperature back: %s",
-                    self.grill_id,
-                    err,
-                )
+        _LOGGER.debug(
+            "Grill %s: %s requested set %s°F smoke %s (was %s°F smoke %s)",
+            self.grill_id,
+            requested_by,
+            set_temp_f,
+            smoke_level,
+            self.state.set_temp_f,
+            self.state.smoke_level,
+        )
         payload = encode_run_mode(set_temp_f, smoke_level, self.state.run_mode_trailer)
         await self._write(write_frame(WsId.MODE, payload))
+        # Show the new values now rather than ~1 s later when the grill
+        # confirms; dashboard controls otherwise snap back and resend the
+        # old value. The read-back sent with the write corrects any refusal.
+        self.state.mode = GrillModeType.RUN
+        self.state.set_temp_f = set_temp_f
+        self.state.smoke_level = smoke_level
+        self._notify()
 
-    async def async_shutdown(self) -> None:
+    async def async_shutdown(self, requested_by: str = "unknown") -> None:
         """Put the grill into its shutdown (standby) cycle."""
+        _LOGGER.debug("Grill %s: %s requested shutdown", self.grill_id, requested_by)
         await self._write(write_frame(WsId.MODE, encode_standby_mode()))
+        self.state.mode = GrillModeType.STANDBY
+        self.state.set_temp_f = None
+        self.state.smoke_level = None
+        self._notify()
 
     async def _write(self, frame: bytes) -> None:
         try:

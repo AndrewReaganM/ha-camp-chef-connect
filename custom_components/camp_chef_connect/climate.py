@@ -101,13 +101,15 @@ class CampChefClimate(CampChefEntity, ClimateEntity):
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
             return
         await self.grill.async_set_run(
-            int(temperature), self.grill.state.smoke_level or DEFAULT_SMOKE
+            int(temperature),
+            self.grill.state.smoke_level or DEFAULT_SMOKE,
+            await self._requested_by(),
         )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
             if self.grill.is_lit:
-                await self.grill.async_shutdown()
+                await self.grill.async_shutdown(await self._requested_by())
             return
         if not self.grill.is_lit:
             raise HomeAssistantError(

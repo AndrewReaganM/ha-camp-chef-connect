@@ -46,4 +46,4 @@ class CampChefSmokeLevel(CampChefEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         if (set_temp := self.grill.state.set_temp_f) is None:
             raise HomeAssistantError("The grill has not reported its set temperature yet")
-        await self.grill.async_set_run(set_temp, int(value))
+        await self.grill.async_set_run(set_temp, int(value), await self._requested_by())

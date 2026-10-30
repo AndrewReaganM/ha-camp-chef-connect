@@ -18,7 +18,7 @@ from .grill import CampChefGrill
 
 _LOGGER = logging.getLogger(__name__)
 
-MODEL_WAIT = 15
+FIRST_REPORT_WAIT = 15
 
 
 @dataclass
@@ -66,12 +66,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: CampChefConfigEntry) -> 
     def auth_failed() -> None:
         entry.async_start_reauth(hass)
 
-    async def set_chamber_goal(grill_id: str, goal_f: int) -> None:
-        await get_token()
-        await api.set_chamber_goal(grill_id, goal_f)
-
     grills = [
-        CampChefGrill(hass, session, info, get_token, auth_failed, set_chamber_goal)
+        CampChefGrill(hass, session, info, get_token, auth_failed)
         for info in grill_infos
         if info.get("_id")
     ]
@@ -79,9 +75,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: CampChefConfigEntry) -> 
 
     for grill in grills:
         grill.start()
-    # The model (and so the probe count) comes from the grill itself; give
-    # online grills a moment to report it before creating entities.
-    await asyncio.gather(*(grill.async_wait_for_model(MODEL_WAIT) for grill in grills))
+    # Give online grills a moment to report in so entities start with data.
+    await asyncio.gather(
+        *(grill.async_wait_for_first_report(FIRST_REPORT_WAIT) for grill in grills)
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

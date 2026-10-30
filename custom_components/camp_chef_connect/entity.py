@@ -33,6 +33,18 @@ class CampChefEntity(Entity):
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(self.grill.async_add_listener(self.async_write_ha_state))
 
+    async def _requested_by(self) -> str:
+        """Describe who triggered the current service call, for the debug log."""
+        ctx = self._context
+        if ctx is None:
+            return "unknown"
+        if ctx.user_id:
+            user = await self.hass.auth.async_get_user(ctx.user_id)
+            return f"user {user.name if user else ctx.user_id}"
+        if ctx.parent_id:
+            return f"automation/script (context {ctx.parent_id})"
+        return f"context {ctx.id}"
+
 
 def _firmware(grill: CampChefGrill) -> str | None:
     mcu = grill.state.stm_firmware or grill.info.get("mcuVersion")
